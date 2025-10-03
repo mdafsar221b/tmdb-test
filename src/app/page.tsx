@@ -54,20 +54,27 @@ const IMAGE_BASE_URL = 'https://image.tmdb.org/t/p/';
 const POSTER_SIZE = 'w342';
 
 const MovieCard: React.FC<{ movie: Movie }> = ({ movie }) => {
-  const posterUrl = movie.poster_path
-    ? `${IMAGE_BASE_URL}${POSTER_SIZE}${movie.poster_path}`
+  const posterPath = movie.poster_path;
+  const posterUrl = posterPath
+    ? `${IMAGE_BASE_URL}${POSTER_SIZE}${posterPath}`
     : `https://placehold.co/342x513/1e293b/cbd5e1?text=Poster+Missing`;
 
   const ratingColor = movie.vote_average >= 7 ? 'bg-green-500' : 'bg-amber-500';
 
   return (
     <div className="bg-slate-800 rounded-xl shadow-xl overflow-hidden transform transition duration-300 hover:scale-[1.03] hover:shadow-2xl flex flex-col">
-      <img
-        src={posterUrl}
-        alt={movie.title}
-        className="w-full object-cover aspect-[2/3]"
-        loading="lazy"
-      />
+      {posterPath ? (
+        <img
+          src={posterUrl}
+          alt={movie.title}
+          className="w-full object-cover aspect-[2/3]"
+          loading="lazy"
+        />
+      ) : (
+        <div className="w-full aspect-[2/3] flex items-center justify-center bg-slate-700 text-slate-400 text-center p-4">
+          Poster Unavailable
+        </div>
+      )}
       
       <div className="p-4 flex flex-col flex-grow">
         <h3 className="text-xl font-bold text-white mb-2 line-clamp-2">
@@ -132,7 +139,8 @@ const TmdbProxyTester: React.FC = () => {
       .catch((error) => {
         console.error('Error fetching popular movies:', error);
         setPopularStatus('ERROR');
-        setPopularError(error.message);
+        // Ensure error is a string if it's an Error object
+        setPopularError(error instanceof Error ? error.message : 'An unknown error occurred.');
       });
   }, [fetchProxy]);
   
@@ -165,10 +173,10 @@ const TmdbProxyTester: React.FC = () => {
       const results: MovieList = await fetchProxy('search/movie', searchTerm);
       setSearchResults(results);
       setSearchStatus('SUCCESS');
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error searching movies:', error);
       setSearchStatus('ERROR');
-      setSearchError(error.message);
+      setSearchError(error instanceof Error ? error.message : 'An unknown error occurred.');
     }
   }, [searchTerm, fetchProxy]);
 
