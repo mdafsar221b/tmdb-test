@@ -1,3 +1,5 @@
+// src/app/page.tsx
+
 "use client";
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -49,6 +51,17 @@ interface Movie {
 
 type MovieList = Movie[];
 type Status = 'IDLE' | 'LOADING' | 'SUCCESS' | 'ERROR';
+
+// Define the shape of the structured query used for the proxy
+interface TmdbQueryParams {
+  path: string;
+  query?: string;
+  with_genres?: string;
+  'vote_average.gte'?: string;
+  'primary_release_year'?: string;
+  sort_by?: string;
+  // Removed [key: string]: string | undefined; to fix the overwrite warning
+}
 
 const IMAGE_BASE_URL = 'https://image.tmdb.org/t/p/';
 const POSTER_SIZE = 'w342';
@@ -104,19 +117,33 @@ const TmdbProxyTester: React.FC = () => {
   const [searchResults, setSearchResults] = useState<MovieList>([]);
   
   const [searchTerm, setSearchTerm] = useState('');
+  const [searchIntent, setSearchIntent] = useState<string>(''); 
   
   const [popularStatus, setPopularStatus] = useState<Status>('IDLE');
   const [trendingStatus, setTrendingStatus] = useState<Status>('IDLE');
   const [searchStatus, setSearchStatus] = useState<Status>('IDLE');
   
   const [popularError, setPopularError] = useState<string | null>(null);
+  const [trendingError, setTrendingError] = useState<string | null>(null); 
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  const fetchProxy = useCallback(async (tmdbPath: string, query?: string) => {
-    let url = `/api/tmdb-proxy?path=${tmdbPath}`;
-    if (query) {
-      url += `&query=${encodeURIComponent(query)}`;
+  const fetchProxy = useCallback(async (params: TmdbQueryParams) => {
+    // Manually construct the query string from the params object
+    const urlParams = new URLSearchParams();
+    
+    // Add path and all other parameters to the URLSearchParams object
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined) {
+        urlParams.set(key, String(value));
+      }
+    });
+
+    if (!params.path) {
+        throw new Error("Proxy call is missing 'path' parameter.");
     }
+
+    // Pass all parameters to the single tmdb-proxy endpoint
+    const url = `/api/tmdb-proxy?${urlParams.toString()}`;
 
     const response = await fetch(url);
     const data = await response.json();
@@ -125,12 +152,13 @@ const TmdbProxyTester: React.FC = () => {
         throw new Error(data.message || 'Failed to fetch data via proxy.');
     }
     
-    return data.results || [];
+    return data.results && Array.isArray(data.results) ? data.results : [];
   }, []);
 
+  // Fetch Popular Movies
   useEffect(() => {
     setPopularStatus('LOADING');
-    fetchProxy('movie/popular')
+    fetchProxy({ path: 'movie/popular' })
       .then((results: MovieList) => {
         setPopularMovies(results.slice(0, 10));
         setPopularStatus('SUCCESS');
@@ -139,44 +167,79 @@ const TmdbProxyTester: React.FC = () => {
       .catch((error) => {
         console.error('Error fetching popular movies:', error);
         setPopularStatus('ERROR');
-        // Ensure error is a string if it's an Error object
         setPopularError(error instanceof Error ? error.message : 'An unknown error occurred.');
       });
   }, [fetchProxy]);
   
+  // Fetch Trending Movies
   useEffect(() => {
     setTrendingStatus('LOADING');
-    fetchProxy('trending/movie/day')
+    fetchProxy({ path: 'trending/movie/day' })
       .then((results: MovieList) => {
         setTrendingMovies(results.slice(0, 10));
         setTrendingStatus('SUCCESS');
+        setTrendingError(null);
       })
       .catch((error) => {
         console.error('Error fetching trending movies:', error);
         setTrendingStatus('ERROR');
+        setTrendingError(error instanceof Error ? error.message : 'An unknown error occurred.');
       });
   }, [fetchProxy]);
 
   const handleSearch = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchTerm.trim()) {
+    const trimmedSearchTerm = searchTerm.trim();
+    
+    if (!trimmedSearchTerm) {
       setSearchResults([]);
       setSearchStatus('IDLE');
+      setSearchIntent('');
       return;
     }
 
     setSearchResults([]);
     setSearchStatus('LOADING');
     setSearchError(null);
+    setSearchIntent(`AI processing: "${trimmedSearchTerm}"...`);
 
     try {
-      const results: MovieList = await fetchProxy('search/movie', searchTerm);
+      // 1. AI STEP: Call the AI parser to convert text into structured parameters
+      const parserUrl = `/api/ai-search-parser?searchTerm=${encodeURIComponent(trimmedSearchTerm)}`;
+      const parserResponse = await fetch(parserUrl);
+      const parsedData = await parserResponse.json();
+      
+      if (!parserResponse.ok) {
+        // AI parser failed (e.g., bad server config, malformed JSON from LLM)
+        throw new Error(parsedData.message || 'Failed to parse query via AI service.');
+      }
+      
+      // Destructure and type-check the AI's output
+      // Note: TmdbQueryParams['params'] is not directly accessible here, using object structure
+      const { path, params }: { path: string, params: { [key: string]: string | undefined } } = parsedData;
+      
+      if (typeof path !== 'string' || typeof params !== 'object') {
+          throw new Error('AI parser returned invalid format.');
+      }
+      
+      // Update the intent based on the AI's decision
+      const filterKeys = Object.keys(params).filter(k => k !== 'query' && params[k]).join(', ');
+      const searchType = path === 'discover/movie' ? 'Semantic' : 'Text';
+      const detail = filterKeys.length > 0 ? `Filtering /${path} using [${filterKeys.toUpperCase()}]` : (params.query ? `Querying /${path} with "${params.query}"` : `Broad Search...`);
+      
+      setSearchIntent(`AI ${searchType} Search: ${detail}`);
+
+      // 2. PROXY STEP: Call the TMDB proxy with the AI-generated structured request
+      // This is the object construction that caused the warning, now safe due to interface change.
+      const tmdbParams: TmdbQueryParams = { path, ...params }; 
+      const results: MovieList = await fetchProxy(tmdbParams);
+      
       setSearchResults(results);
       setSearchStatus('SUCCESS');
     } catch (error) {
-      console.error('Error searching movies:', error);
+      console.error('Error during semantic search:', error);
       setSearchStatus('ERROR');
-      setSearchError(error instanceof Error ? error.message : 'An unknown error occurred.');
+      setSearchError(error instanceof Error ? error.message : 'An unknown error occurred during search.');
     }
   }, [searchTerm, fetchProxy]);
 
@@ -189,10 +252,10 @@ const TmdbProxyTester: React.FC = () => {
     } else if (status === 'ERROR') {
       content = (
         <div className="bg-red-900/50 border border-red-700 text-white p-6 rounded-xl shadow-inner my-4">
-          <p className="font-bold text-lg mb-2">Proxy Error / TMDB Access Issue</p>
+          <p className="font-bold text-lg mb-2">Proxy Error / Access Issue</p>
           <p className="text-sm">
-            This means the server (where this app is deployed) could not connect to TMDB or your token is invalid.
-            Check your **TMDB\_ACCESS\_TOKEN** in the deployment environment.
+            This means the server (where this app is deployed) could not connect to TMDB or your token is invalid. 
+            **If searching is failing, also check your AI\_API\_KEY in the environment variables and ensure the SDK is installed.**
           </p>
           <p className="mt-3 text-red-300 font-mono text-xs break-all">
             {error || 'Unknown network error.'}
@@ -219,10 +282,14 @@ const TmdbProxyTester: React.FC = () => {
 
     return (
       <section className="mt-12">
-        <h2 className="text-3xl font-extrabold text-white mb-6 flex items-center">
+        <h2 className="text-3xl font-extrabold text-white mb-2 flex items-center">
           {icon}
           {title}
         </h2>
+        {/* Display the AI-parsed intent under the search results header */}
+        {title.includes('Search') && searchStatus !== 'IDLE' && (
+             <p className="text-fuchsia-300 mb-6 text-sm italic">{searchIntent}</p>
+        )}
         {content}
       </section>
     );
@@ -233,10 +300,10 @@ const TmdbProxyTester: React.FC = () => {
       
       <header className="text-center mb-12">
         <h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-fuchsia-600">
-          TMDB Proxy Tester
+          AI Semantic Search Tester 🧠
         </h1>
         <p className="text-slate-400 mt-2 text-lg">
-          Testing TMDB API connectivity and Bearer Token authentication via a Next.js Proxy.
+          Natural Language Search powered by AI parsing, backed by Next.js and TMDB.
         </p>
       </header>
 
@@ -248,7 +315,7 @@ const TmdbProxyTester: React.FC = () => {
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search movies (e.g., 'Inception', 'Dune')"
+              placeholder="Try: 'mind-bending sci-fi with a 7.5+ rating' or 'best of 2024'"
               className="w-full bg-slate-700 text-white border-2 border-slate-600 rounded-xl py-3 pl-10 pr-4 focus:outline-none focus:border-fuchsia-500 transition duration-150 shadow-lg"
             />
           </div>
@@ -262,17 +329,17 @@ const TmdbProxyTester: React.FC = () => {
         </form>
       </section>
 
-      {searchStatus !== 'IDLE' && renderContent(searchStatus, searchError, searchResults, `Search Results for "${searchTerm}"`)}
+      {searchStatus !== 'IDLE' && renderContent(searchStatus, searchError, searchResults, `Search Results`)}
 
       <main className="max-w-7xl mx-auto">
-        {renderContent(trendingStatus, popularError, trendingMovies, 'Trending Movies (Today)')}
+        {renderContent(trendingStatus, trendingError, trendingMovies, 'Trending Movies (Today)')}
 
         {renderContent(popularStatus, popularError, popularMovies, 'Popular Movies (All Time)')}
       </main>
 
       <footer className="mt-20 pt-8 border-t border-slate-800 text-center text-slate-500 text-sm">
         <p>Data provided by The Movie Database (TMDB).</p>
-        <p>Connectivity tested via Next.js server proxy.</p>
+        <p>AI parsing simulated/powered by the server proxy.</p>
       </footer>
     </div>
   );

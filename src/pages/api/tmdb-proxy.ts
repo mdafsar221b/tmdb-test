@@ -1,3 +1,5 @@
+// src/pages/api/tmdb-proxy.ts
+
 import { NextApiRequest, NextApiResponse } from 'next';
 
 const TMDB_API_BASE_URL = 'https://api.themoviedb.org/3/';
@@ -8,7 +10,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).json({ message: 'Method Not Allowed' });
   }
 
-  const { path, query } = req.query;
+  // Destructure 'path' and capture all other potential query params with 'rest'
+  const { path, ...rest } = req.query;
 
   if (!TMDB_TOKEN) {
     console.error('TMDB_ACCESS_TOKEN is not set in environment variables.');
@@ -21,15 +24,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(400).json({ message: 'Missing or invalid "path" query parameter.' });
   }
 
+  // Initialize the TMDB URL with the base path
   const tmdbUrl = new URL(path, TMDB_API_BASE_URL);
 
-  if (query && typeof query === 'string') {
-    tmdbUrl.searchParams.set('query', query);
-  }
-  
+  // Add standard parameters
   tmdbUrl.searchParams.set('language', 'en-US');
   tmdbUrl.searchParams.set('page', '1');
   tmdbUrl.searchParams.set('include_adult', 'false');
+
+  // Dynamically add all incoming query parameters (from the AI parser)
+  Object.entries(rest).forEach(([key, value]) => {
+      // Ensure the key is a string and value is either string or string array (we take the first)
+      if (typeof key === 'string' && value) {
+          const finalValue = Array.isArray(value) ? value[0] : String(value);
+          tmdbUrl.searchParams.set(key, finalValue);
+      }
+  });
 
   try {
     const tmdbResponse = await fetch(tmdbUrl.toString(), {
